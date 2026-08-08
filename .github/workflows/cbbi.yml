@@ -1,21 +1,36 @@
 name: CBBI auto
+
 on:
   schedule:
-    - cron: "0 */2 * * *"   # UTC 每2小时
+    - cron: "0 */2 * * *"
   workflow_dispatch:
+
 jobs:
-  run:
+  update:
     runs-on: ubuntu-latest
-    permissions: { contents: write }
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -e .
-      - run: python publish_cbbi.py
-      - run: |
-          git config user.email "bot@users.noreply.github.com"
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Generate cbbi.json
+        run: uv run python publish_cbbi.py
+
+      - name: Commit and push
+        run: |
           git config user.name "cbbi-bot"
+          git config user.email "cbbi-bot@users.noreply.github.com"
           git add cbbi.json
-          git diff --cached --quiet || git commit -m "auto cbbi"
+          git diff --cached --quiet || git commit -m "auto update cbbi.json"
           git push

@@ -2,20 +2,42 @@ import re
 import json
 import subprocess
 import time
-import sys
 from datetime import datetime, timezone
 
+
+EXPECTED_INDICATORS = [
+    "Pi Cycle Top Indicator",
+    "RUPL/NUPL Chart",
+    "RHODL Ratio",
+    "Puell Multiple",
+    "2 Year Moving Average",
+    "Bitcoin Trolololo Trend Line",
+    "MVRV Z-Score",
+    "Reserve Risk",
+    "Woobull Top Cap vs CVDD",
+]
+
+
+def normalize_name(name: str) -> str:
+    """
+    把输出里的指标名归一化，方便和预期列表比对。
+    """
+    name = name.strip()
+    # 有些版本可能写成 Woobull Top Cap vs CVDD / Woobull Top Cap vs CVDD 等
+    name = re.sub(r"\s+", " ", name)
+    return name
+
+
 def main():
-    # 用 -u 强制无缓冲，确保输出能实时捕获
     proc = subprocess.Popen(
-        [sys.executable, "-u", "main.py"],
+        ["python", "-u", "main.py"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        bufsize=1
+        bufsize=1,
     )
 
-    # 给足时间（拉数据+打印），适当加长到 120 秒更保险
+    # 等足够时间让 main.py 拉数据并打印指标
     time.sleep(120)
 
     if proc.poll() is None:
@@ -27,57 +49,57 @@ def main():
 
     stdout, stderr = proc.communicate()
 
-    # 把完整输出写一份到文件，方便排查
+    output = stdout + "\n" + stderr
+
+    # 调试原始输出
     with open("cbbi_debug.log", "w", encoding="utf-8") as f:
         f.write("=== STDOUT ===\n")
         f.write(stdout)
         f.write("\n=== STDERR ===\n")
         f.write(stderr)
 
-    output = stdout + "\n" + stderr
-
-    # 打印出来方便在 Action 日志里直接看
-    print("===== CBBI RAW OUTPUT =====")
+    print("===== CBBI RAW OUTPUT TAIL =====")
     print(output[-3000:])
-    print("============================")
+    print("================================")
 
-    # 更宽松的正则：允许全角/半角百分号、各种空格、可选小数
-    # 匹配示例：
-    #   29 % - Pi Cycle Top Indicator
-    #   29% - Pi Cycle Top Indicator
-    #   29％ - Pi Cycle Top Indicator
-    pattern = r"(\d{1,3}(?:\.\d+)?)\s*[%％]\s*[-–—]\s*(.+?)\s*$"
+    # 严格匹配：数字% - 已知指标名
+    # 例子：29 % - Pi Cycle Top Indicator
+    pattern = r"^\s*(\d{1,3}(?:\.\d+)?)\s*[%％]\s*[-–—]\s*(.+?)\s*$"
 
-    matches = re.findall(pattern, output, re.MULTILINE | re.IGNORECASE)
+    found = {}
 
-    if not matches:
-        # 兜底：尝试匹配任何 "数字 百分号 文字" 的行
-        pattern2 = r"(\d{1,3})\s*[%％]\s*(.+?)$"
-        matches = re.findall(pattern2, output, re.MULTILINE)
+    for line in output.splitlines():
+        m = re.match(pattern, line)
+        if not m:
+            continue
 
-    if not matches:
+        value_str, name_raw = m.groups()
+        name = normalize_name(name_raw)
+
+        # 只接受预期指标名
+        if name in EXPECTED_INDICATORS:
+            value = float(value_str)
+            # 如果同一指标出现多次，取最后一次或第一次都可以，这里覆盖为最后一次
+            found[name] = value
+
+    if len(found) < len(EXPECTED_INDICATORS):
+        missing = [x for x in EXPECTED_INDICATORS if x not in found]
+
         raise SystemExit(
-            "❌ 未解析到 CBBI 指标。\n"
-            "请检查 cbbi_debug.log 里的原始输出，确认 main.py 是否真的打印了指标行。"
+            f"❌ 只解析到 {len(found)}/{len(EXPECTED_INDICATORS)} 个指标。\n"
+            f"缺失：{missing}\n"
+            f"请检查 cbbi_debug.log 原始输出。"
         )
 
-    indicators = {}
-    values = []
-
-    for value, name in matches:
-        v = float(value)
-        n = re.sub(r"\s+", " ", name).strip()
-        # 去重（防止同一指标打印两次）
-        if n not in indicators:
-            indicators[n] = v
-            values.append(v)
-
+    values = [found[k] for k in EXPECTED_INDICATORS]
     score = sum(values) / len(values)
+
+    indicators = {k: float(found[k]) for k in EXPECTED_INDICATORS}
 
     data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "score": round(score, 2),
-        "indicators": {k: float(v) for k, v in indicators.items()}
+        "indicators": indicators,
     }
 
     with open("cbbi.json", "w", encoding="utf-8") as f:
